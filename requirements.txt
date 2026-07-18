@@ -1,0 +1,22 @@
+# En máquinas sin GPU instalar primero torch CPU-only (mucho más ligero que el default con CUDA):
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+
+# Detección y tracking
+ultralytics>=8.3
+supervision>=0.24
+trackers>=2.5
+
+# Video / imagen
+opencv-python>=4.10
+ffmpeg-python>=0.2
+
+# Numérico / datos
+numpy>=1.26
+scipy>=1.13
+pandas>=2.2
+
+# OCR del marcador
+easyocr>=1.7
+
+# Visualización (heatmaps, radar)
+matplotlib>=3.9

@@ -1,0 +1,28 @@
+# Entorno Python
+venv/
+__pycache__/
+*.pyc
+
+# Datos y modelos (pesan mucho, no se versionan)
+data/raw/*
+!data/raw/.gitkeep
+data/models/*
+!data/models/.gitkeep
+outputs/*
+!outputs/.gitkeep
+
+# Pesos de modelos
+*.pt
+
+# Video
+*.mp4
+*.mov
+*.avi
+*.mkv
+
+# Entorno
+.env
+
+# Editor / OS
+.vscode/
+.DS_Store
