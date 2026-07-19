@@ -33,26 +33,41 @@ class PipelineConfig:
 
 
 def _reencode_h264(path: Path) -> None:
-    """Re-codifica a H.264 para que el video sea reproducible en navegadores."""
+    """Re-codifica a H.264 para que el video sea reproducible en navegadores.
+
+    Prueba primero el codificador por hardware de NVIDIA (NVENC) — en una GPU
+    tipo T4 codifica un partido completo en minutos. Si no hay GPU o el ffmpeg
+    del sistema no lo soporta, cae a libx264 por CPU.
+    """
     tmp = path.with_name(path.stem + "_h264.mp4")
-    result = subprocess.run(
-        [
-            "ffmpeg", "-y", "-loglevel", "error",
-            "-i", str(path),
-            "-c:v", "libx264", "-preset", "fast", "-pix_fmt", "yuv420p", "-an",
-            str(tmp),
-        ]
-    )
-    if result.returncode == 0:
-        tmp.replace(path)
-    else:
-        tmp.unlink(missing_ok=True)
+    for codec_args in (
+        ["-c:v", "h264_nvenc", "-preset", "p4"],
+        ["-c:v", "libx264", "-preset", "veryfast"],
+    ):
+        result = subprocess.run(
+            [
+                "ffmpeg", "-y", "-loglevel", "error",
+                "-i", str(path),
+                *codec_args, "-pix_fmt", "yuv420p", "-an",
+                str(tmp),
+            ]
+        )
+        if result.returncode == 0:
+            tmp.replace(path)
+            return
+    tmp.unlink(missing_ok=True)
 
 
 def run_pipeline(
     config: PipelineConfig,
     progress_callback: Callable[[int, int], None] | None = None,
+    status_callback: Callable[[str], None] | None = None,
 ) -> dict:
+    def status(msg: str) -> None:
+        print(msg)
+        if status_callback is not None:
+            status_callback(msg)
+
     info = get_video_info(config.video_path)
     output_dir = config.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -108,8 +123,10 @@ def run_pipeline(
     if progress_callback is not None:
         progress_callback(total_frames, total_frames)
     if config.write_annotated_video:
+        status("Convirtiendo el video anotado a H.264…")
         _reencode_h264(output_dir / "annotated.mp4")
 
+    status("Calculando estadísticas y mapas de calor…")
     all_events = event_detector.events + (
         scoreboard.events if scoreboard is not None else []
     )
@@ -126,6 +143,7 @@ def run_pipeline(
         name = "team_a" if team == TEAM_A else "team_b"
         save_heatmap(stats, team, output_dir / f"heatmap_{name}.png")
 
+    status("Generando highlights…")
     highlights_path = build_highlights(
         config.video_path, all_events, output_dir / "highlights.mp4"
     )

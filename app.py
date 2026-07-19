@@ -122,8 +122,13 @@ def analizar(
     def on_progress(done: int, total: int) -> None:
         progress(done / total, desc=f"Analizando… {done}/{total} frames")
 
+    def on_status(msg: str) -> None:
+        progress(1.0, desc=msg)
+
     try:
-        result = run_pipeline(config, progress_callback=on_progress)
+        result = run_pipeline(
+            config, progress_callback=on_progress, status_callback=on_status
+        )
     except FileNotFoundError as exc:
         raise gr.Error(str(exc)) from exc
 
