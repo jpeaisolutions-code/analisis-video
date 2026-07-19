@@ -41,6 +41,8 @@ o una instancia cloud con GPU (RunPod, Lambda, AWS/GCP).
 ## Setup
 
 ```bash
+git clone https://github.com/jpeaisolutions-code/analisis-video.git
+cd analisis-video
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
@@ -66,9 +68,10 @@ Subes el video desde el navegador, pulsas **Analizar** y ves los resultados en
 pantalla: video anotado, posesión, estadísticas por jugador, eventos, mapas de
 calor y highlights.
 
-**En Google Colab con GPU:** sube `notebooks/colab_analisis.ipynb` a
-[colab.research.google.com](https://colab.research.google.com), activa la GPU
-y ejecuta las celdas — la última abre la aplicación con un enlace público.
+**En Google Colab con GPU:** abre directamente
+[el notebook en Colab](https://colab.research.google.com/github/jpeaisolutions-code/analisis-video/blob/main/notebooks/colab_analisis.ipynb),
+activa la GPU y ejecuta las celdas — la última abre la aplicación con un
+enlace público.
 
 ### Línea de comandos (alternativa)
 
