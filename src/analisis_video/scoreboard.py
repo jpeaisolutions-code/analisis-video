@@ -30,8 +30,13 @@ class ScoreboardReader:
     def _get_reader(self):
         if self._reader is None:
             import easyocr
+            import torch
 
-            self._reader = easyocr.Reader(list(self.languages), gpu=False, verbose=False)
+            self._reader = easyocr.Reader(
+                list(self.languages),
+                gpu=torch.cuda.is_available(),
+                verbose=False,
+            )
         return self._reader
 
     def update(self, time_s: float, frame: np.ndarray) -> None:

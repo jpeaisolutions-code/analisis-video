@@ -71,7 +71,8 @@ def main() -> None:
     result = run_pipeline(config)
     print("\nResultados:")
     for key, value in result.items():
-        print(f"  {key}: {value}")
+        if not key.endswith("_data"):
+            print(f"  {key}: {value}")
 
 
 if __name__ == "__main__":

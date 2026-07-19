@@ -1,6 +1,8 @@
 """Orquestación end-to-end: video -> tracks -> stats/eventos -> outputs."""
 
 import json
+import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -30,13 +32,36 @@ class PipelineConfig:
     device: str | None = None
 
 
-def run_pipeline(config: PipelineConfig) -> dict:
+def _reencode_h264(path: Path) -> None:
+    """Re-codifica a H.264 para que el video sea reproducible en navegadores."""
+    tmp = path.with_name(path.stem + "_h264.mp4")
+    result = subprocess.run(
+        [
+            "ffmpeg", "-y", "-loglevel", "error",
+            "-i", str(path),
+            "-c:v", "libx264", "-preset", "fast", "-pix_fmt", "yuv420p", "-an",
+            str(tmp),
+        ]
+    )
+    if result.returncode == 0:
+        tmp.replace(path)
+    else:
+        tmp.unlink(missing_ok=True)
+
+
+def run_pipeline(
+    config: PipelineConfig,
+    progress_callback: Callable[[int, int], None] | None = None,
+) -> dict:
     info = get_video_info(config.video_path)
     output_dir = config.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
 
     calibration = load_calibration(config.calibration_path)
     effective_fps = info.fps / config.stride
+
+    end_s = min(config.end_s, info.duration_s) if config.end_s else info.duration_s
+    total_frames = max(1, int((end_s - config.start_s) * info.fps / config.stride))
 
     detector = Detector(model_path=config.model_path, device=config.device)
     tracker = Tracker(fps=effective_fps)
@@ -72,25 +97,30 @@ def run_pipeline(config: PipelineConfig) -> dict:
             if writer is not None:
                 writer.write(annotate_frame(frame, tracked, teams))
             processed += 1
+            if progress_callback is not None and processed % 10 == 0:
+                progress_callback(processed, total_frames)
             if processed % 100 == 0:
                 print(f"  {processed} frames procesados (t={tracked.time_s:.0f}s)")
     finally:
         if writer is not None:
             writer.close()
 
+    if progress_callback is not None:
+        progress_callback(total_frames, total_frames)
+    if config.write_annotated_video:
+        _reencode_h264(output_dir / "annotated.mp4")
+
     all_events = event_detector.events + (
         scoreboard.events if scoreboard is not None else []
     )
     all_events.sort(key=lambda e: e.time_s)
 
+    stats_data = stats.to_dict()
+    events_data = [e.to_dict() for e in all_events]
     stats_path = output_dir / "stats.json"
-    stats_path.write_text(
-        json.dumps(stats.to_dict(), indent=2, ensure_ascii=False)
-    )
+    stats_path.write_text(json.dumps(stats_data, indent=2, ensure_ascii=False))
     events_path = output_dir / "events.json"
-    events_path.write_text(
-        json.dumps([e.to_dict() for e in all_events], indent=2, ensure_ascii=False)
-    )
+    events_path.write_text(json.dumps(events_data, indent=2, ensure_ascii=False))
 
     for team in (TEAM_A, TEAM_B):
         name = "team_a" if team == TEAM_A else "team_b"
@@ -109,4 +139,10 @@ def run_pipeline(config: PipelineConfig) -> dict:
         if config.write_annotated_video
         else None,
         "highlights": str(highlights_path) if highlights_path else None,
+        "heatmaps": {
+            "team_a": str(output_dir / "heatmap_team_a.png"),
+            "team_b": str(output_dir / "heatmap_team_b.png"),
+        },
+        "stats_data": stats_data,
+        "events_data": events_data,
     }

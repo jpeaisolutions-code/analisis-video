@@ -55,6 +55,23 @@ sudo apt-get install ffmpeg
 
 ## Uso
 
+### Aplicación web (recomendado)
+
+```bash
+python app.py            # local: abre http://127.0.0.1:7860 en el navegador
+python app.py --share    # además genera un enlace público (para Colab)
+```
+
+Subes el video desde el navegador, pulsas **Analizar** y ves los resultados en
+pantalla: video anotado, posesión, estadísticas por jugador, eventos, mapas de
+calor y highlights.
+
+**En Google Colab con GPU:** sube `notebooks/colab_analisis.ipynb` a
+[colab.research.google.com](https://colab.research.google.com), activa la GPU
+y ejecuta las celdas — la última abre la aplicación con un enlace público.
+
+### Línea de comandos (alternativa)
+
 ```bash
 python scripts/run_pipeline.py --video ruta/al/video.mp4
 ```
@@ -63,5 +80,5 @@ Los resultados (video anotado, estadísticas, eventos, highlights) se guardan en
 
 ### Recomendación de flujo de trabajo
 
-1. Probar cada etapa del pipeline con un clip corto (1-2 min) primero.
+1. Probar con un clip corto (1-2 min) o con `--end 120` primero.
 2. Una vez validado, correr el partido completo en un entorno con GPU.

@@ -20,3 +20,6 @@ easyocr>=1.7
 
 # Visualización (heatmaps, radar)
 matplotlib>=3.9
+
+# Interfaz web
+gradio>=5.0
