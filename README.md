@@ -64,9 +64,10 @@ python app.py            # local: abre http://127.0.0.1:7860 en el navegador
 python app.py --share    # además genera un enlace público (para Colab)
 ```
 
-Subes el video desde el navegador, pulsas **Analizar** y ves los resultados en
-pantalla: video anotado, posesión, estadísticas por jugador, eventos, mapas de
-calor y highlights.
+Subes el video desde el navegador —o pegas un enlace directo o de un partido
+de **Veo** (`app.veo.co/matches/...`) y la app lo descarga sola—, pulsas
+**Analizar** y ves los resultados en pantalla: video anotado, posesión,
+estadísticas por jugador, eventos, mapas de calor y highlights.
 
 **En Google Colab con GPU:** abre directamente
 [el notebook en Colab](https://colab.research.google.com/github/jpeaisolutions-code/analisis-video/blob/main/notebooks/colab_analisis.ipynb),

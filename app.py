@@ -6,8 +6,12 @@ Uso:
 """
 
 import argparse
+import json
+import re
 import sys
 import time
+import urllib.parse
+import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
@@ -18,6 +22,62 @@ import pandas as pd
 from analisis_video.pipeline import PipelineConfig, run_pipeline
 
 OUTPUT_ROOT = Path(__file__).resolve().parent / "outputs"
+DOWNLOAD_DIR = Path(__file__).resolve().parent / "data" / "raw"
+
+VEO_MATCH_RE = re.compile(r"app\.veo\.co/matches/([^/?#]+)")
+
+# Algunos CDN (p.ej. Wikimedia) rechazan el User-Agent por defecto de urllib
+_HTTP_HEADERS = {"User-Agent": "Mozilla/5.0 (analisis-video; jpe.aisolutions@gmail.com)"}
+
+
+def _urlopen(url: str):
+    return urllib.request.urlopen(urllib.request.Request(url, headers=_HTTP_HEADERS))
+
+
+def _resolve_video_url(url: str) -> tuple[str, str]:
+    """Devuelve (url directa, nombre de archivo). Entiende páginas de Veo."""
+    match = VEO_MATCH_RE.search(url)
+    if not match:
+        name = Path(urllib.parse.urlparse(url).path).name or "video.mp4"
+        return url, name
+    slug = match.group(1)
+    api = f"https://app.veo.co/api/app/matches/{slug}/videos"
+    try:
+        with _urlopen(api) as response:
+            videos = json.load(response)
+    except Exception as exc:
+        raise gr.Error(
+            f"No se pudo acceder al partido de Veo (¿el enlace es público?): {exc}"
+        ) from exc
+    # "standard" es la vista de cámara que sigue el juego; "panorama" es el
+    # gran angular sin editar
+    for video in videos:
+        if video.get("render_type") == "standard" and video.get("url"):
+            return video["url"], f"{slug}.mp4"
+    for video in videos:
+        if video.get("mime_type") == "video/mp4" and video.get("url"):
+            return video["url"], f"{slug}.mp4"
+    raise gr.Error("No se encontró un video descargable en ese enlace de Veo.")
+
+
+def _download_video(url: str, name: str, progress) -> Path:
+    DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    dest = DOWNLOAD_DIR / name
+    with _urlopen(url) as response:
+        total = int(response.headers.get("Content-Length") or 0)
+        if dest.exists() and total and dest.stat().st_size == total:
+            return dest  # ya descargado
+        done = 0
+        with open(dest, "wb") as f:
+            while chunk := response.read(4 * 1024 * 1024):
+                f.write(chunk)
+                done += len(chunk)
+                if total:
+                    progress(
+                        done / total,
+                        desc=f"Descargando video… {done / 1e6:.0f}/{total / 1e6:.0f} MB",
+                    )
+    return dest
 
 KIND_LABELS = {"goal": "⚽ Gol", "shot": "🎯 Remate", "corner": "🚩 Córner"}
 TEAM_LABELS = {"team_a": "Equipo A", "team_b": "Equipo B", "unknown": "—"}
@@ -29,6 +89,7 @@ MODEL_CHOICES = {
 
 def analizar(
     video,
+    url,
     modelo,
     stride,
     inicio,
@@ -37,8 +98,12 @@ def analizar(
     generar_video,
     progress=gr.Progress(),
 ):
-    if not video:
-        raise gr.Error("Sube un video primero.")
+    if url and url.strip():
+        progress(0, desc="Localizando el video…")
+        direct_url, name = _resolve_video_url(url.strip())
+        video = str(_download_video(direct_url, name, progress))
+    elif not video:
+        raise gr.Error("Sube un video o pega un enlace primero.")
 
     run_dir = OUTPUT_ROOT / time.strftime("%Y%m%d_%H%M%S")
     config = PipelineConfig(
@@ -127,6 +192,11 @@ with gr.Blocks(title="JPE AI Solutions — Análisis de Fútbol") as demo:
     with gr.Row():
         with gr.Column(scale=1):
             video_in = gr.Video(label="Video del partido")
+            url_in = gr.Textbox(
+                label="…o pega un enlace (Veo o URL directa de video)",
+                placeholder="https://app.veo.co/matches/…",
+                info="Si pegas un enlace, se usa el enlace y no el archivo subido.",
+            )
             modelo_in = gr.Dropdown(
                 choices=list(MODEL_CHOICES),
                 value=list(MODEL_CHOICES)[0],
@@ -167,7 +237,8 @@ with gr.Blocks(title="JPE AI Solutions — Análisis de Fútbol") as demo:
     boton.click(
         analizar,
         inputs=[
-            video_in, modelo_in, stride_in, inicio_in, fin_in, ocr_in, anotado_in
+            video_in, url_in, modelo_in, stride_in, inicio_in, fin_in,
+            ocr_in, anotado_in,
         ],
         outputs=[
             resumen_out, video_out, players_out, events_out,
