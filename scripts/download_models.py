@@ -1,39 +1,34 @@
 """Descarga a data/models/ los pesos YOLO afinados para fútbol que usa el
 pipeline por defecto (jugador/portero/árbitro y balón — ver detection.py).
 
+No es estrictamente necesario ejecutarlo a mano: `Detector` descarga los
+pesos que falten la primera vez que se usan. Sirve para adelantar la
+descarga antes de lanzar un análisis.
+
 Uso:
     python scripts/download_models.py
 """
 
-import urllib.request
+import sys
 from pathlib import Path
 
-MODELS_DIR = Path(__file__).resolve().parent.parent / "data" / "models"
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-# Pesos públicos de martinjolif en HuggingFace (AGPL-3.0), afinados sobre
-# YOLO11 específicamente para fútbol. Ver README de cada repo para métricas.
-MODELS = {
-    "yolo-football-player-detection.pt": (
-        "https://huggingface.co/martinjolif/yolo-football-player-detection"
-        "/resolve/main/yolo-football-player-detection.pt"
-    ),
-    "yolo-football-ball-detection.pt": (
-        "https://huggingface.co/martinjolif/yolo-football-ball-detection"
-        "/resolve/main/yolo-football-ball-detection.pt"
-    ),
-}
+from analisis_video.detection import (
+    DEFAULT_BALL_MODEL,
+    DEFAULT_PLAYER_MODEL,
+    ensure_weights,
+)
 
 
 def main() -> None:
-    MODELS_DIR.mkdir(parents=True, exist_ok=True)
-    for filename, url in MODELS.items():
-        target = MODELS_DIR / filename
-        if target.exists():
-            print(f"Ya existe: {target}")
+    for model_path in (DEFAULT_PLAYER_MODEL, DEFAULT_BALL_MODEL):
+        if Path(model_path).exists():
+            print(f"Ya existe: {model_path}")
             continue
-        print(f"Descargando {filename}…")
-        urllib.request.urlretrieve(url, target)
-        print(f"  guardado en: {target}")
+        print(f"Descargando {model_path}…")
+        ensure_weights(model_path)
+        print(f"  guardado en: {model_path}")
 
 
 if __name__ == "__main__":

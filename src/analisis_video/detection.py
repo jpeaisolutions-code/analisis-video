@@ -15,6 +15,7 @@ Los árbitros se descartan aquí mismo: no deben entrar en tracking,
 clasificación de equipo ni estadísticas.
 """
 
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -31,6 +32,31 @@ REFEREE_CLASS_ID = 3
 
 DEFAULT_PLAYER_MODEL = "data/models/yolo-football-player-detection.pt"
 DEFAULT_BALL_MODEL = "data/models/yolo-football-ball-detection.pt"
+
+# Pesos públicos de martinjolif en HuggingFace (AGPL-3.0). Si el modelo por
+# defecto no está en disco (p.ej. no se ejecutó scripts/download_models.py),
+# se descargan aquí mismo para que Detector nunca falle por eso.
+_WEIGHTS_URLS = {
+    DEFAULT_PLAYER_MODEL: (
+        "https://huggingface.co/martinjolif/yolo-football-player-detection"
+        "/resolve/main/yolo-football-player-detection.pt"
+    ),
+    DEFAULT_BALL_MODEL: (
+        "https://huggingface.co/martinjolif/yolo-football-ball-detection"
+        "/resolve/main/yolo-football-ball-detection.pt"
+    ),
+}
+
+
+def ensure_weights(path: str | Path) -> str:
+    """Si `path` es uno de los modelos por defecto y no existe, lo descarga."""
+    path = Path(path)
+    url = _WEIGHTS_URLS.get(str(path))
+    if path.exists() or url is None:
+        return str(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    urllib.request.urlretrieve(url, path)
+    return str(path)
 
 
 @dataclass
@@ -51,8 +77,8 @@ class Detector:
         ball_confidence: float = 0.15,
         device: str | None = None,
     ):
-        self.player_model = YOLO(str(player_model_path))
-        self.ball_model = YOLO(str(ball_model_path))
+        self.player_model = YOLO(ensure_weights(player_model_path))
+        self.ball_model = YOLO(ensure_weights(ball_model_path))
         self.confidence = confidence
         # El balón sigue siendo pequeño y borroso incluso para el modelo
         # especializado; umbral más bajo que para personas.
