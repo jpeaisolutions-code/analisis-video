@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from .pitch import PITCH_LENGTH_M, PITCH_WIDTH_M, PitchCalibration
+from .pitch import PitchCalibration
 from .teams import TEAM_A, TEAM_B, UNKNOWN
 from .tracking import TrackedFrame, bottom_center
 
@@ -107,24 +107,6 @@ class MatchStats:
             "team_a": round(100 * self.possession_frames[TEAM_A] / total, 1),
             "team_b": round(100 * self.possession_frames[TEAM_B] / total, 1),
         }
-
-    def heatmap(self, team: int, bins: int = 30) -> np.ndarray:
-        """Histograma 2D de posiciones del equipo (para graficar)."""
-        points = [
-            p
-            for player in self.players.values()
-            if player.team == team
-            for p in player.positions
-        ]
-        if not points:
-            return np.zeros((bins, bins))
-        arr = np.array(points)
-        if self.calibration:
-            range_ = [[0, PITCH_LENGTH_M], [0, PITCH_WIDTH_M]]
-        else:
-            range_ = None
-        hist, _, _ = np.histogram2d(arr[:, 0], arr[:, 1], bins=bins, range=range_)
-        return hist
 
     def to_dict(self) -> dict:
         return {

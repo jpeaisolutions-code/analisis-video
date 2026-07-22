@@ -1,14 +1,9 @@
-"""Visualización: frames anotados (cajas, IDs, equipos, balón) y heatmaps."""
-
-from pathlib import Path
+"""Visualización: frames anotados (cajas, IDs, equipos, balón)."""
 
 import cv2
-import matplotlib.pyplot as plt
 import numpy as np
 import supervision as sv
 
-from .pitch import PITCH_LENGTH_M, PITCH_WIDTH_M
-from .stats import MatchStats
 from .teams import TEAM_A, TEAM_B
 from .tracking import TrackedFrame
 
@@ -45,32 +40,3 @@ def annotate_frame(
         cv2.circle(out, (bx, by), 8, (0, 255, 255), 2)
 
     return out
-
-
-def save_heatmap(
-    stats: MatchStats, team: int, path: str | Path, bins: int = 30
-) -> Path:
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    hist = stats.heatmap(team, bins=bins)
-
-    fig, ax = plt.subplots(figsize=(10.5, 6.8))
-    extent = (
-        [0, PITCH_LENGTH_M, PITCH_WIDTH_M, 0]
-        if stats.calibration
-        else None
-    )
-    ax.imshow(
-        hist.T,
-        origin="upper",
-        extent=extent,
-        cmap="hot",
-        interpolation="bilinear",
-        aspect="auto",
-    )
-    name = {TEAM_A: "Equipo A", TEAM_B: "Equipo B"}.get(team, "Equipo")
-    ax.set_title(f"Mapa de calor — {name} ({stats.units})")
-    fig.tight_layout()
-    fig.savefig(path, dpi=120)
-    plt.close(fig)
-    return path

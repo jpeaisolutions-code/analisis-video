@@ -246,17 +246,11 @@ def analizar(
             [{"Minuto": "—", "Evento": "Sin eventos detectados", "Detalle": ""}]
         )
 
-    heatmaps = [
-        (result["heatmaps"]["team_a"], "Equipo A"),
-        (result["heatmaps"]["team_b"], "Equipo B"),
-    ]
-
     return (
         resumen_md,
         result["annotated_video"],
         players_df,
         events_df,
-        heatmaps,
         result["highlights"],
     )
 
@@ -339,8 +333,6 @@ with gr.Blocks(title="JPE AI Solutions — Análisis de Fútbol") as demo:
                     players_out = gr.Dataframe(label="Estadísticas por jugador")
                 with gr.Tab("⚡ Eventos"):
                     events_out = gr.Dataframe(label="Eventos detectados")
-                with gr.Tab("🔥 Mapas de calor"):
-                    heatmaps_out = gr.Gallery(label="Por equipo", columns=2)
                 with gr.Tab("🎬 Highlights"):
                     highlights_out = gr.Video(label="Resumen automático")
 
@@ -367,8 +359,7 @@ with gr.Blocks(title="JPE AI Solutions — Análisis de Fútbol") as demo:
             ocr_in, anotado_in, calib_points_state,
         ],
         outputs=[
-            resumen_out, video_out, players_out, events_out,
-            heatmaps_out, highlights_out,
+            resumen_out, video_out, players_out, events_out, highlights_out,
         ],
         api_name="analizar",
     )

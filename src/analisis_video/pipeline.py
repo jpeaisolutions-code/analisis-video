@@ -12,10 +12,10 @@ from .highlights import build_highlights
 from .pitch import PITCH_CORNERS, PitchCalibration, load_calibration
 from .scoreboard import ScoreboardReader
 from .stats import MatchStats
-from .teams import TEAM_A, TEAM_B, TeamClassifier
+from .teams import TeamClassifier
 from .tracking import Tracker
 from .video import VideoWriter, get_video_info, iter_frames
-from .visualize import annotate_frame, save_heatmap
+from .visualize import annotate_frame
 
 
 @dataclass
@@ -153,10 +153,6 @@ def run_pipeline(
     events_path = output_dir / "events.json"
     events_path.write_text(json.dumps(events_data, indent=2, ensure_ascii=False))
 
-    for team in (TEAM_A, TEAM_B):
-        name = "team_a" if team == TEAM_A else "team_b"
-        save_heatmap(stats, team, output_dir / f"heatmap_{name}.png")
-
     status("Generando highlights…")
     highlights_path = build_highlights(
         config.video_path, all_events, output_dir / "highlights.mp4"
@@ -171,10 +167,6 @@ def run_pipeline(
         if config.write_annotated_video
         else None,
         "highlights": str(highlights_path) if highlights_path else None,
-        "heatmaps": {
-            "team_a": str(output_dir / "heatmap_team_a.png"),
-            "team_b": str(output_dir / "heatmap_team_b.png"),
-        },
         "stats_data": stats_data,
         "events_data": events_data,
     }
