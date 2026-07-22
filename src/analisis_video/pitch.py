@@ -32,23 +32,60 @@ GOAL_WIDTH_M = 7.32
 GOAL_Y_MIN = (PITCH_WIDTH_M - GOAL_WIDTH_M) / 2
 GOAL_Y_MAX = (PITCH_WIDTH_M + GOAL_WIDTH_M) / 2
 
+# Las 4 esquinas de la cancha, en el orden en que se le pide al usuario que
+# haga clic sobre el frame: superior-izq, superior-der, inferior-der,
+# inferior-izq (recorriendo el contorno en sentido horario).
+PITCH_CORNERS = (
+    (0.0, 0.0),
+    (PITCH_LENGTH_M, 0.0),
+    (PITCH_LENGTH_M, PITCH_WIDTH_M),
+    (0.0, PITCH_WIDTH_M),
+)
+
 
 @dataclass
 class PitchCalibration:
     homography: np.ndarray  # 3x3, píxel -> metros
 
     @classmethod
-    def from_json(cls, path: str | Path) -> "PitchCalibration":
-        data = json.loads(Path(path).read_text())
-        points = data["points"]
-        if len(points) < 4:
+    def from_points(
+        cls, pixel_points: list | np.ndarray, pitch_points: list | np.ndarray
+    ) -> "PitchCalibration":
+        if len(pixel_points) < 4 or len(pitch_points) != len(pixel_points):
             raise ValueError("Se necesitan al menos 4 correspondencias píxel->cancha")
-        src = np.array([p["pixel"] for p in points], dtype=np.float64)
-        dst = np.array([p["pitch"] for p in points], dtype=np.float64)
+        src = np.array(pixel_points, dtype=np.float64)
+        dst = np.array(pitch_points, dtype=np.float64)
         homography, _ = cv2.findHomography(src, dst, cv2.RANSAC)
         if homography is None:
             raise ValueError("No se pudo estimar la homografía con esos puntos")
         return cls(homography=homography)
+
+    @classmethod
+    def from_pixel_corners(cls, pixel_corners: list | np.ndarray) -> "PitchCalibration":
+        """Atajo cuando los puntos clicados son las 4 esquinas de la cancha,
+        en el orden de `PITCH_CORNERS` (superior-izq → horario)."""
+        return cls.from_points(pixel_corners, PITCH_CORNERS)
+
+    @classmethod
+    def from_json(cls, path: str | Path) -> "PitchCalibration":
+        data = json.loads(Path(path).read_text())
+        points = data["points"]
+        return cls.from_points(
+            [p["pixel"] for p in points], [p["pitch"] for p in points]
+        )
+
+    def to_json(self, path: str | Path, pixel_points, pitch_points) -> None:
+        Path(path).write_text(
+            json.dumps(
+                {
+                    "points": [
+                        {"pixel": list(px), "pitch": list(pt)}
+                        for px, pt in zip(pixel_points, pitch_points)
+                    ]
+                },
+                indent=2,
+            )
+        )
 
     def to_pitch(self, points_xy: np.ndarray) -> np.ndarray:
         """Transforma puntos (N, 2) de píxeles a metros sobre la cancha."""

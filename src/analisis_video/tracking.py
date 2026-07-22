@@ -1,10 +1,14 @@
-"""Tracking de jugadores con ByteTrack: asigna IDs consistentes entre frames."""
+"""Tracking de jugadores con BoT-SORT: asigna IDs consistentes entre frames.
+
+Usa compensación de movimiento de cámara (CMC) porque el plano de Veo
+panea/hace zoom para seguir el juego — un tracker que asume cámara fija
+(como ByteTrack puro) pierde el track en cada movimiento de cámara."""
 
 from dataclasses import dataclass, field
 
 import numpy as np
 import supervision as sv
-from trackers import ByteTrackTracker
+from trackers import BoTSORTTracker
 
 from .detection import FrameDetections
 
@@ -40,24 +44,36 @@ class BallSmoother:
 
 
 class Tracker:
-    def __init__(self, fps: float):
+    def __init__(self, fps: float, source_fps: float | None = None):
+        # `fps` es la tasa efectiva (tras `stride`): se la pasamos a BoT-SORT
+        # para que su modelo de movimiento sepa cuánto tiempo real separa dos
+        # frames procesados. `source_fps` es la del vídeo original y es la que
+        # hay que usar para convertir `frame_index` (índice absoluto del vídeo
+        # fuente) a segundos — si se usa `fps` ahí, time_s queda multiplicado
+        # por `stride`, descuadrando duración de highlights, cooldown de
+        # eventos y velocidad calculada.
         self.fps = fps
-        self.byte_track = ByteTrackTracker(
+        self.source_fps = source_fps or fps
+        self.bot_sort = BoTSORTTracker(
             frame_rate=fps,
             track_activation_threshold=0.25,
             high_conf_det_threshold=0.5,
+            # Buffer largo: en fútbol una oclusión (piña en un córner, choque)
+            # puede durar varios segundos y no debería crear un track nuevo.
+            lost_track_buffer=90,
+            enable_cmc=True,
         )
         self.ball_smoother = BallSmoother()
 
-    def update(self, detections: FrameDetections) -> TrackedFrame:
-        persons = self.byte_track.update(detections.persons)
+    def update(self, detections: FrameDetections, frame: np.ndarray) -> TrackedFrame:
+        persons = self.bot_sort.update(detections.persons, frame=frame)
         if persons.tracker_id is not None:
             # -1 = track aún no confirmado por el tracker
             persons = persons[persons.tracker_id != -1]
         ball_xy = self.ball_smoother.update(detections.ball)
         return TrackedFrame(
             frame_index=detections.frame_index,
-            time_s=detections.frame_index / self.fps,
+            time_s=detections.frame_index / self.source_fps,
             persons=persons,
             ball_xy=ball_xy,
         )

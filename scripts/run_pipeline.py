@@ -27,7 +27,14 @@ def main() -> None:
         help="JSON de calibración de cancha (ver src/analisis_video/pitch.py)",
     )
     parser.add_argument(
-        "--model", default="yolov8m.pt", help="Modelo YOLO (ej. yolov8n.pt para CPU)"
+        "--player-model",
+        default="data/models/yolo-football-player-detection.pt",
+        help="Modelo YOLO para jugador/portero/árbitro",
+    )
+    parser.add_argument(
+        "--ball-model",
+        default="data/models/yolo-football-ball-detection.pt",
+        help="Modelo YOLO especializado en balón",
     )
     parser.add_argument(
         "--start", type=float, default=0.0, help="Segundo inicial a procesar"
@@ -58,7 +65,8 @@ def main() -> None:
         video_path=Path(args.video),
         output_dir=Path(args.output_dir),
         calibration_path=Path(args.calibration) if args.calibration else None,
-        model_path=args.model,
+        player_model_path=args.player_model,
+        ball_model_path=args.ball_model,
         start_s=args.start,
         end_s=args.end,
         stride=args.stride,

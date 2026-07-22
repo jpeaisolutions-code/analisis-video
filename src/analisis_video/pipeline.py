@@ -6,10 +6,10 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from .detection import Detector
+from .detection import DEFAULT_BALL_MODEL, DEFAULT_PLAYER_MODEL, Detector
 from .events import EventDetector
 from .highlights import build_highlights
-from .pitch import load_calibration
+from .pitch import PITCH_CORNERS, PitchCalibration, load_calibration
 from .scoreboard import ScoreboardReader
 from .stats import MatchStats
 from .teams import TEAM_A, TEAM_B, TeamClassifier
@@ -23,7 +23,11 @@ class PipelineConfig:
     video_path: Path
     output_dir: Path = Path("outputs")
     calibration_path: Path | None = None
-    model_path: str = "yolov8m.pt"
+    # Alternativa a calibration_path: las 4 esquinas de la cancha (píxeles),
+    # en el orden de pitch.PITCH_CORNERS, recogidas por clic en la app.
+    calibration_points: list[tuple[float, float]] | None = None
+    player_model_path: str = DEFAULT_PLAYER_MODEL
+    ball_model_path: str = DEFAULT_BALL_MODEL
     start_s: float = 0.0
     end_s: float | None = None
     stride: int = 1
@@ -72,14 +76,24 @@ def run_pipeline(
     output_dir = config.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    calibration = load_calibration(config.calibration_path)
+    if config.calibration_points:
+        calibration = PitchCalibration.from_pixel_corners(config.calibration_points)
+        calibration.to_json(
+            output_dir / "calibration.json", config.calibration_points, PITCH_CORNERS
+        )
+    else:
+        calibration = load_calibration(config.calibration_path)
     effective_fps = info.fps / config.stride
 
     end_s = min(config.end_s, info.duration_s) if config.end_s else info.duration_s
     total_frames = max(1, int((end_s - config.start_s) * info.fps / config.stride))
 
-    detector = Detector(model_path=config.model_path, device=config.device)
-    tracker = Tracker(fps=effective_fps)
+    detector = Detector(
+        player_model_path=config.player_model_path,
+        ball_model_path=config.ball_model_path,
+        device=config.device,
+    )
+    tracker = Tracker(fps=effective_fps, source_fps=info.fps)
     team_classifier = TeamClassifier()
     stats = MatchStats(calibration=calibration, fps=effective_fps)
     event_detector = EventDetector(calibration=calibration, fps=effective_fps)
@@ -103,7 +117,7 @@ def run_pipeline(
             end_s=config.end_s,
         ):
             detections = detector.detect(frame, frame_index=frame_index)
-            tracked = tracker.update(detections)
+            tracked = tracker.update(detections, frame)
             teams = team_classifier.update(frame, tracked.persons)
             stats.update(tracked, teams)
             event_detector.update(tracked.time_s, tracked.ball_xy)

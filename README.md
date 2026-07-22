@@ -9,8 +9,15 @@ Pipeline en Python para analizar video de partidos de fútbol:
 
 ## Arquitectura
 
-- Detección: YOLOv8 (`ultralytics`)
-- Tracking: ByteTrack (vía `supervision`)
+- Detección: dos modelos YOLO11 afinados para fútbol (`ultralytics`) — uno
+  para jugador/portero/árbitro, otro especializado solo en balón (mejor
+  recall que una clase "ball" genérica). Pesos en
+  [HuggingFace (martinjolif, AGPL-3.0)](https://huggingface.co/martinjolif/yolo-football-player-detection),
+  se descargan con `python scripts/download_models.py`. Los árbitros se
+  descartan en la propia detección: no entran en tracking ni estadísticas.
+- Tracking: BoT-SORT con compensación de movimiento de cámara (vía
+  `trackers`) — el plano de Veo panea/hace zoom para seguir el juego, y un
+  tracker que asume cámara fija pierde el track en cada movimiento.
 - Equipos: clasificación por color de camiseta
 - Cancha: detección de puntos clave + homografía (píxeles → coordenadas reales de cancha)
 - Estadísticas y eventos: derivados de los tracks + homografía
@@ -46,6 +53,7 @@ cd analisis-video
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
+python scripts/download_models.py   # descarga los pesos YOLO a data/models/
 ```
 
 Requiere `ffmpeg` instalado a nivel de sistema (para lectura de video y generación de
