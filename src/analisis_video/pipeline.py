@@ -14,6 +14,7 @@ from .player_track import PlayerTrackBuilder
 from .scoreboard import ScoreboardReader
 from .stats import MatchStats
 from .teams import TeamClassifier
+from .touches import TouchDetector
 from .tracking import Tracker
 from .video import VideoWriter, get_video_info, iter_frames
 from .visualize import annotate_frame
@@ -100,6 +101,7 @@ def run_pipeline(
     team_classifier = TeamClassifier()
     stats = MatchStats(calibration=calibration, fps=effective_fps)
     event_detector = EventDetector(calibration=calibration, fps=effective_fps)
+    touch_detector = TouchDetector(calibration=calibration, fps=effective_fps)
     scoreboard = ScoreboardReader() if config.use_scoreboard_ocr else None
 
     player_builder = None
@@ -131,6 +133,7 @@ def run_pipeline(
             teams = team_classifier.update(frame, tracked.persons)
             stats.update(tracked, teams)
             event_detector.update(tracked.time_s, tracked.ball_xy)
+            touch_detector.update(tracked, teams)
             if player_builder is not None:
                 player_builder.update(frame, tracked, teams, thumbs_dir)
             if scoreboard is not None:
@@ -158,12 +161,17 @@ def run_pipeline(
     )
     all_events.sort(key=lambda e: e.time_s)
 
+    touch_detector.finish()
+
     stats_data = stats.to_dict()
     events_data = [e.to_dict() for e in all_events]
+    touches_data = touch_detector.to_dict()
     stats_path = output_dir / "stats.json"
     stats_path.write_text(json.dumps(stats_data, indent=2, ensure_ascii=False))
     events_path = output_dir / "events.json"
     events_path.write_text(json.dumps(events_data, indent=2, ensure_ascii=False))
+    touches_path = output_dir / "touches.json"
+    touches_path.write_text(json.dumps(touches_data, indent=2, ensure_ascii=False))
 
     player_track_data = None
     if player_builder is not None:
@@ -188,6 +196,7 @@ def run_pipeline(
         "highlights": str(highlights_path) if highlights_path else None,
         "stats_data": stats_data,
         "events_data": events_data,
+        "touches": touches_data,
         "player_track": player_track_data,
         "player_thumbs_dir": str(thumbs_dir) if thumbs_dir else None,
         "analyzed_start_s": config.start_s,

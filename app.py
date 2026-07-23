@@ -24,6 +24,7 @@ import pandas as pd
 from analisis_video.pipeline import PipelineConfig, run_pipeline
 from analisis_video.pitch import PITCH_CORNERS
 from analisis_video.player_track import MAX_GAP_S
+from analisis_video.touches import target_touches
 
 OUTPUT_ROOT = Path(__file__).resolve().parent / "outputs"
 DOWNLOAD_DIR = Path(__file__).resolve().parent / "data" / "raw"
@@ -297,7 +298,14 @@ def _review_discard(run_dir, chain, idx, rejected, chosen_labels):
     return rejected, gallery, status, _choices_update(choices)
 
 
-def _save_review(run_dir, chain, rejected, progress=gr.Progress()):
+def _touches_summary(touches: list, chain: list) -> str:
+    if not chain:
+        return ""
+    n = len(target_touches(touches, {"segments": chain}))
+    return f"**{n} toques** detectados del jugador elegido (capa base, sin clasificar todavía en pases/duelos/etc.)."
+
+
+def _save_review(run_dir, chain, rejected, touches, progress=gr.Progress()):
     if not run_dir:
         raise gr.Error("No hay ningún análisis cargado todavía.")
     path = Path(run_dir) / "player_track.json"
@@ -305,7 +313,10 @@ def _save_review(run_dir, chain, rejected, progress=gr.Progress()):
     data["segments"] = chain
     data["rejected_track_ids"] = sorted(rejected)
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False))
-    return "💾 Guardado."
+    # Los toques se calcularon una sola vez para todos los jugadores durante
+    # el análisis (touches.json) — recalcular los del jugador elegido tras
+    # corregir tramos en el wizard es barato y no requiere reanalizar el vídeo.
+    return "💾 Guardado.", _touches_summary(touches, chain)
 
 
 def _draw_calib_points(clean_frame, points):
@@ -470,18 +481,22 @@ def analizar(
         resumen_jugador = f"**{len(chain)} tramos**, todos enlazados automáticamente y hasta el final del análisis. Nada que revisar."
     gallery, review_status_text, review_choices = _render_review(str(run_dir), chain, 0, set())
 
+    touches = result.get("touches") or []
+
     return (
         resumen_md,
         result["annotated_video"],
         events_df,
         result["highlights"],
         resumen_jugador,
+        _touches_summary(touches, chain),
         gallery,
         review_status_text,
         _choices_update(review_choices),
         str(run_dir),
         chain,
         0,
+        touches,
     )
 
 
@@ -591,6 +606,7 @@ with gr.Blocks(title="JPE AI Solutions — Análisis de Fútbol") as demo:
                     events_out = gr.Dataframe(label="Eventos detectados")
                 with gr.Tab("🎯 Jugador seguido"):
                     player_track_summary = gr.Markdown()
+                    player_touches_summary = gr.Markdown()
                     review_gallery = gr.Gallery(
                         label="Candidatos — haz clic en el jugador correcto para confirmarlo",
                         columns=4,
@@ -611,6 +627,7 @@ with gr.Blocks(title="JPE AI Solutions — Análisis de Fútbol") as demo:
                     player_chain_state = gr.State([])
                     review_idx_state = gr.State(0)
                     rejected_ids_state = gr.State(set())
+                    touches_state = gr.State([])
                 with gr.Tab("🎬 Highlights"):
                     highlights_out = gr.Video(label="Resumen automático")
 
@@ -654,8 +671,9 @@ with gr.Blocks(title="JPE AI Solutions — Análisis de Fútbol") as demo:
         ],
         outputs=[
             resumen_out, video_out, events_out, highlights_out,
-            player_track_summary, review_gallery, review_status,
+            player_track_summary, player_touches_summary, review_gallery, review_status,
             review_discard_choices, run_dir_state, player_chain_state, review_idx_state,
+            touches_state,
         ],
         api_name="analizar",
     ).then(
@@ -690,8 +708,8 @@ with gr.Blocks(title="JPE AI Solutions — Análisis de Fútbol") as demo:
     )
     review_save_btn.click(
         _save_review,
-        inputs=[run_dir_state, player_chain_state, rejected_ids_state],
-        outputs=[review_status],
+        inputs=[run_dir_state, player_chain_state, rejected_ids_state, touches_state],
+        outputs=[review_status, player_touches_summary],
     )
 
 
