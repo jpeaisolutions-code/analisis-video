@@ -22,6 +22,7 @@ import pandas as pd
 
 from analisis_video.pipeline import PipelineConfig, run_pipeline
 from analisis_video.pitch import PITCH_CORNERS
+from analisis_video.player_track import MAX_GAP_S
 
 OUTPUT_ROOT = Path(__file__).resolve().parent / "outputs"
 DOWNLOAD_DIR = Path(__file__).resolve().parent / "data" / "raw"
@@ -339,10 +340,28 @@ def analizar(
     player_track = result.get("player_track") or {"target_track_id": None, "segments": []}
     chain = player_track["segments"]
     n_revisar = len(_pending_indices(chain))
+    analyzed_end = result.get("analyzed_end_s")
+    # Si el último tramo acaba mucho antes de que termine el análisis, el
+    # jugador se perdió y no se encontró ningún candidato para continuar —
+    # muy distinto de "se le siguió sin problema todo el partido", aunque en
+    # ambos casos no haya ningún tramo marcado "revisar".
+    cut_short = (
+        bool(chain)
+        and analyzed_end is not None
+        and (analyzed_end - chain[-1]["end_time"]) > MAX_GAP_S
+    )
     if not chain:
         resumen_jugador = (
             "⚠️ No se pudo localizar al jugador en el frame elegido — "
             "vuelve a marcarlo y repite el análisis."
+        )
+    elif cut_short:
+        resumen_jugador = (
+            f"⚠️ El seguimiento se corta en el segundo {chain[-1]['end_time']:.0f} "
+            f"(el análisis llega hasta el {analyzed_end:.0f}) — no se encontró "
+            "ningún jugador del mismo equipo cerca para continuar. Puede que "
+            "haya salido del plano. Revisa el vídeo anotado en ese momento, o "
+            "vuelve a marcarlo más adelante y repite el análisis desde ahí."
         )
     elif n_revisar:
         resumen_jugador = (
@@ -350,7 +369,7 @@ def analizar(
             f"**{n_revisar} por confirmar** abajo."
         )
     else:
-        resumen_jugador = f"**{len(chain)} tramos**, todos enlazados automáticamente. Nada que revisar."
+        resumen_jugador = f"**{len(chain)} tramos**, todos enlazados automáticamente y hasta el final del análisis. Nada que revisar."
     gallery, review_status_text = _render_review(str(run_dir), chain, 0)
 
     return (

@@ -190,4 +190,6 @@ def run_pipeline(
         "events_data": events_data,
         "player_track": player_track_data,
         "player_thumbs_dir": str(thumbs_dir) if thumbs_dir else None,
+        "analyzed_start_s": config.start_s,
+        "analyzed_end_s": end_s,
     }
