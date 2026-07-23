@@ -161,7 +161,11 @@ def _thumb(run_dir, track_id) -> str:
     return str(Path(run_dir) / "player_thumbs" / f"{track_id}.jpg")
 
 
-def _render_review(run_dir, chain, idx):
+def _visible_candidates(seg: dict, rejected: set) -> list:
+    return [c for c in seg.get("candidates", []) if c["track_id"] not in rejected]
+
+
+def _render_review(run_dir, chain, idx, rejected):
     pending = _pending_indices(chain)
     if not chain:
         return [], "No se pudo localizar al jugador en el frame elegido — revisa el clic e inténtalo de nuevo."
@@ -171,49 +175,85 @@ def _render_review(run_dir, chain, idx):
     seg_idx = pending[idx]
     seg = chain[seg_idx]
     prev_end = chain[seg_idx - 1]["end_time"]
-    gallery = [
-        (_thumb(run_dir, c["track_id"]), f"#{c['track_id']}")
-        for c in seg.get("candidates", [])
-    ]
-    status = (
-        f"Tramo {idx + 1}/{len(pending)} por confirmar — hueco entre "
-        f"{prev_end:.0f}s y {seg['start_time']:.0f}s. Haz clic en el jugador correcto."
-    )
+    visible = _visible_candidates(seg, rejected)
+    gallery = [(_thumb(run_dir, c["track_id"]), f"#{c['track_id']}") for c in visible]
+    hueco = f"hueco entre {prev_end:.0f}s y {seg['start_time']:.0f}s"
+    if visible:
+        status = (
+            f"Tramo {idx + 1}/{len(pending)} por confirmar — {hueco}. Haz clic en "
+            "el jugador, luego confirma con ✅ o descártalo con ❌."
+        )
+    else:
+        status = (
+            f"Tramo {idx + 1}/{len(pending)} por confirmar — {hueco}. Sin "
+            "candidatos visibles (los rechazaste todos) — usa Siguiente, o "
+            "vuelve a marcar al jugador más adelante y repite el análisis."
+        )
     return gallery, status
 
 
-def _review_nav(run_dir, chain, idx, delta):
+def _review_nav(run_dir, chain, idx, delta, rejected):
     idx = idx + delta
-    gallery, status = _render_review(run_dir, chain, idx)
+    gallery, status = _render_review(run_dir, chain, idx, rejected)
     pending = _pending_indices(chain)
     idx = idx % len(pending) if pending else 0
-    return gallery, status, idx
+    return gallery, status, idx, None
 
 
-def _review_select(run_dir, chain, idx, evt: gr.SelectData):
+def _review_mark_selected(run_dir, chain, idx, rejected, evt: gr.SelectData):
     pending = _pending_indices(chain)
     if not pending:
-        return chain, [], "✅ No quedan tramos por confirmar.", idx
+        return None, "✅ No quedan tramos por confirmar."
     seg = chain[pending[idx % len(pending)]]
-    candidates = seg.get("candidates", [])
-    if evt.index >= len(candidates):
+    visible = _visible_candidates(seg, rejected)
+    if evt.index >= len(visible):
         raise gr.Error("Candidato no válido.")
-    chosen = candidates[evt.index]
+    tid = visible[evt.index]["track_id"]
+    return evt.index, f"Candidato #{tid} seleccionado — pulsa ✅ si es tu jugador, ❌ si no lo es."
+
+
+def _review_accept(run_dir, chain, idx, rejected, selected):
+    pending = _pending_indices(chain)
+    if not pending:
+        return chain, [], "✅ No quedan tramos por confirmar.", idx, None
+    if selected is None:
+        raise gr.Error("Selecciona primero un candidato haciendo clic en su miniatura.")
+    seg = chain[pending[idx % len(pending)]]
+    visible = _visible_candidates(seg, rejected)
+    if selected >= len(visible):
+        raise gr.Error("Ese candidato ya no está disponible, vuelve a seleccionar.")
+    chosen = visible[selected]
     seg["track_id"] = chosen["track_id"]
     seg["status"] = "confirmado"
     seg.pop("candidates", None)
-    pending = _pending_indices(chain)
     new_idx = 0
-    gallery, status = _render_review(run_dir, chain, new_idx)
-    return chain, gallery, status, new_idx
+    gallery, status = _render_review(run_dir, chain, new_idx, rejected)
+    return chain, gallery, status, new_idx, None
 
 
-def _save_review(run_dir, chain, progress=gr.Progress()):
+def _review_reject(run_dir, chain, idx, rejected, selected):
+    pending = _pending_indices(chain)
+    if not pending:
+        return rejected, [], "✅ No quedan tramos por confirmar.", None
+    if selected is None:
+        raise gr.Error("Selecciona primero un candidato haciendo clic en su miniatura.")
+    seg = chain[pending[idx % len(pending)]]
+    visible = _visible_candidates(seg, rejected)
+    if selected >= len(visible):
+        raise gr.Error("Ese candidato ya no está disponible, vuelve a seleccionar.")
+    rejected = set(rejected)
+    rejected.add(visible[selected]["track_id"])
+    gallery, status = _render_review(run_dir, chain, idx, rejected)
+    return rejected, gallery, status, None
+
+
+def _save_review(run_dir, chain, rejected, progress=gr.Progress()):
     if not run_dir:
         raise gr.Error("No hay ningún análisis cargado todavía.")
     path = Path(run_dir) / "player_track.json"
     data = json.loads(path.read_text()) if path.exists() else {}
     data["segments"] = chain
+    data["rejected_track_ids"] = sorted(rejected)
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False))
     return "💾 Guardado."
 
@@ -370,7 +410,7 @@ def analizar(
         )
     else:
         resumen_jugador = f"**{len(chain)} tramos**, todos enlazados automáticamente y hasta el final del análisis. Nada que revisar."
-    gallery, review_status_text = _render_review(str(run_dir), chain, 0)
+    gallery, review_status_text = _render_review(str(run_dir), chain, 0, set())
 
     return (
         resumen_md,
@@ -482,11 +522,14 @@ with gr.Blocks(title="JPE AI Solutions — Análisis de Fútbol") as demo:
                 with gr.Tab("🎯 Jugador seguido"):
                     player_track_summary = gr.Markdown()
                     review_gallery = gr.Gallery(
-                        label="Candidatos — haz clic en el jugador correcto",
+                        label="Candidatos — haz clic en el jugador, luego confirma o descarta",
                         columns=4,
                         height=220,
                     )
                     review_status = gr.Markdown()
+                    with gr.Row():
+                        review_accept_btn = gr.Button("✅ Es él/ella")
+                        review_reject_btn = gr.Button("❌ No es él/ella")
                     with gr.Row():
                         review_prev_btn = gr.Button("◀ Anterior")
                         review_next_btn = gr.Button("Siguiente ▶")
@@ -494,6 +537,8 @@ with gr.Blocks(title="JPE AI Solutions — Análisis de Fútbol") as demo:
                     run_dir_state = gr.State(None)
                     player_chain_state = gr.State([])
                     review_idx_state = gr.State(0)
+                    review_selected_state = gr.State(None)
+                    rejected_ids_state = gr.State(set())
                 with gr.Tab("🎬 Highlights"):
                     highlights_out = gr.Video(label="Resumen automático")
 
@@ -541,25 +586,47 @@ with gr.Blocks(title="JPE AI Solutions — Análisis de Fútbol") as demo:
             run_dir_state, player_chain_state, review_idx_state,
         ],
         api_name="analizar",
+    ).then(
+        lambda: (set(), None),
+        outputs=[rejected_ids_state, review_selected_state],
     )
     review_prev_btn.click(
-        lambda rd, c, i: _review_nav(rd, c, i, -1),
-        inputs=[run_dir_state, player_chain_state, review_idx_state],
-        outputs=[review_gallery, review_status, review_idx_state],
+        lambda rd, c, i, rej: _review_nav(rd, c, i, -1, rej),
+        inputs=[run_dir_state, player_chain_state, review_idx_state, rejected_ids_state],
+        outputs=[review_gallery, review_status, review_idx_state, review_selected_state],
     )
     review_next_btn.click(
-        lambda rd, c, i: _review_nav(rd, c, i, 1),
-        inputs=[run_dir_state, player_chain_state, review_idx_state],
-        outputs=[review_gallery, review_status, review_idx_state],
+        lambda rd, c, i, rej: _review_nav(rd, c, i, 1, rej),
+        inputs=[run_dir_state, player_chain_state, review_idx_state, rejected_ids_state],
+        outputs=[review_gallery, review_status, review_idx_state, review_selected_state],
     )
     review_gallery.select(
-        _review_select,
-        inputs=[run_dir_state, player_chain_state, review_idx_state],
-        outputs=[player_chain_state, review_gallery, review_status, review_idx_state],
+        _review_mark_selected,
+        inputs=[run_dir_state, player_chain_state, review_idx_state, rejected_ids_state],
+        outputs=[review_selected_state, review_status],
+    )
+    review_accept_btn.click(
+        _review_accept,
+        inputs=[
+            run_dir_state, player_chain_state, review_idx_state,
+            rejected_ids_state, review_selected_state,
+        ],
+        outputs=[
+            player_chain_state, review_gallery, review_status,
+            review_idx_state, review_selected_state,
+        ],
+    )
+    review_reject_btn.click(
+        _review_reject,
+        inputs=[
+            run_dir_state, player_chain_state, review_idx_state,
+            rejected_ids_state, review_selected_state,
+        ],
+        outputs=[rejected_ids_state, review_gallery, review_status, review_selected_state],
     )
     review_save_btn.click(
         _save_review,
-        inputs=[run_dir_state, player_chain_state],
+        inputs=[run_dir_state, player_chain_state, rejected_ids_state],
         outputs=[review_status],
     )
 
