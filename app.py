@@ -86,7 +86,6 @@ def _download_video(url: str, name: str, progress) -> Path:
     return dest
 
 KIND_LABELS = {"goal": "⚽ Gol", "shot": "🎯 Remate", "corner": "🚩 Córner"}
-TEAM_LABELS = {"team_a": "Equipo A", "team_b": "Equipo B", "unknown": "—"}
 CORNER_LABELS = (
     "superior-izquierda",
     "superior-derecha",
@@ -322,18 +321,6 @@ def analizar(
         f"Distancias en {unidades}*"
     )
 
-    players_df = pd.DataFrame(
-        [
-            {
-                "Jugador (ID)": f"#{p['track_id']}",
-                "Equipo": TEAM_LABELS.get(p["team"], p["team"]),
-                f"Distancia ({stats['units']})": p["distance"],
-                f"Vel. máx ({stats['units']}/s)": p["max_speed"],
-            }
-            for p in stats["players"]
-        ]
-    )
-
     events_df = pd.DataFrame(
         [
             {
@@ -369,7 +356,6 @@ def analizar(
     return (
         resumen_md,
         result["annotated_video"],
-        players_df,
         events_df,
         result["highlights"],
         resumen_jugador,
@@ -472,8 +458,6 @@ with gr.Blocks(title="JPE AI Solutions — Análisis de Fútbol") as demo:
             with gr.Tabs():
                 with gr.Tab("🎥 Video anotado"):
                     video_out = gr.Video(label="Jugadores y balón detectados")
-                with gr.Tab("📊 Jugadores"):
-                    players_out = gr.Dataframe(label="Estadísticas por jugador")
                 with gr.Tab("⚡ Eventos"):
                     events_out = gr.Dataframe(label="Eventos detectados")
                 with gr.Tab("🎯 Jugador seguido"):
@@ -533,7 +517,7 @@ with gr.Blocks(title="JPE AI Solutions — Análisis de Fútbol") as demo:
             ocr_in, anotado_in, calib_points_state, player_click_state,
         ],
         outputs=[
-            resumen_out, video_out, players_out, events_out, highlights_out,
+            resumen_out, video_out, events_out, highlights_out,
             player_track_summary, review_gallery, review_status,
             run_dir_state, player_chain_state, review_idx_state,
         ],
