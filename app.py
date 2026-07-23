@@ -595,6 +595,7 @@ with gr.Blocks(title="JPE AI Solutions — Análisis de Fútbol") as demo:
                         label="Candidatos — haz clic en el jugador correcto para confirmarlo",
                         columns=4,
                         height=220,
+                        preview=False,
                     )
                     review_status = gr.Markdown()
                     review_discard_choices = gr.CheckboxGroup(
