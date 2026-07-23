@@ -271,9 +271,13 @@ def _review_select(run_dir, chain, idx, rejected, evt: gr.SelectData):
     seg["track_id"] = chosen["track_id"]
     seg["status"] = "confirmado"
     seg.pop("candidates", None)
-    new_idx = 0
-    gallery, status, choices = _render_review(run_dir, chain, new_idx, rejected)
-    return chain, gallery, status, _choices_update(choices), new_idx
+    # Al confirmar, el tramo actual sale de "pending" y los siguientes se
+    # desplazan una posición — mantener el mismo idx (no saltar a 0) hace que
+    # se muestre el siguiente tramo en orden, en vez de saltar al primero de
+    # la lista (que podía ser uno completamente distinto, ya sin candidatos,
+    # dando la falsa impresión de que aceptar había rechazado todo).
+    gallery, status, choices = _render_review(run_dir, chain, idx, rejected)
+    return chain, gallery, status, _choices_update(choices), idx
 
 
 def _review_discard(run_dir, chain, idx, rejected, chosen_labels):
