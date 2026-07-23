@@ -105,8 +105,7 @@ def _resolve_local_video(video, url, panorama, progress) -> Path:
     return Path(video)
 
 
-def _grab_frame(video, url, panorama, at_s, progress=gr.Progress()):
-    """Extrae un frame del vídeo (en `at_s` segundos) para calibrar sobre él."""
+def _extract_frame(video, url, panorama, at_s, progress) -> "np.ndarray":
     path = _resolve_local_video(video, url, panorama, progress)
     cap = cv2.VideoCapture(str(path))
     if not cap.isOpened():
@@ -117,9 +116,106 @@ def _grab_frame(video, url, panorama, at_s, progress=gr.Progress()):
     cap.release()
     if not ok:
         raise gr.Error("No se pudo leer ese frame — prueba con otro segundo.")
-    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+
+def _grab_frame(video, url, panorama, at_s, progress=gr.Progress()):
+    """Extrae un frame del vídeo (en `at_s` segundos) para calibrar sobre él."""
+    rgb = _extract_frame(video, url, panorama, at_s, progress)
     status = f"0/4 puntos — haz clic en la esquina {CORNER_LABELS[0]}"
     return rgb, rgb, [], status
+
+
+def _grab_frame_player(video, url, panorama, at_s, progress=gr.Progress()):
+    """Extrae un frame del vídeo para elegir con un clic al jugador a seguir."""
+    rgb = _extract_frame(video, url, panorama, at_s, progress)
+    status = "Haz clic sobre el jugador que quieres seguir."
+    return rgb, rgb, None, status
+
+
+def _on_player_click(clean_frame, at_s, evt: gr.SelectData):
+    if clean_frame is None:
+        raise gr.Error("Extrae un frame primero.")
+    x, y = float(evt.index[0]), float(evt.index[1])
+    vis = clean_frame.copy()
+    cv2.circle(vis, (int(x), int(y)), 10, (255, 60, 60), 3)
+    cv2.circle(vis, (int(x), int(y)), 2, (255, 60, 60), -1)
+    status = (
+        f"Jugador marcado en el segundo {float(at_s or 0):.0f}. "
+        "Vuelve a hacer clic si quieres corregirlo."
+    )
+    return vis, (float(at_s or 0), x, y), status
+
+
+def _reset_player(clean_frame):
+    if clean_frame is None:
+        return None, None, "Extrae un frame primero."
+    return clean_frame, None, "Haz clic sobre el jugador que quieres seguir."
+
+
+def _pending_indices(chain: list) -> list:
+    return [i for i, s in enumerate(chain) if s.get("status") == "revisar"]
+
+
+def _thumb(run_dir, track_id) -> str:
+    return str(Path(run_dir) / "player_thumbs" / f"{track_id}.jpg")
+
+
+def _render_review(run_dir, chain, idx):
+    pending = _pending_indices(chain)
+    if not chain:
+        return [], "No se pudo localizar al jugador en el frame elegido — revisa el clic e inténtalo de nuevo."
+    if not pending:
+        return [], "✅ No quedan tramos por confirmar."
+    idx = idx % len(pending)
+    seg_idx = pending[idx]
+    seg = chain[seg_idx]
+    prev_end = chain[seg_idx - 1]["end_time"]
+    gallery = [
+        (_thumb(run_dir, c["track_id"]), f"#{c['track_id']}")
+        for c in seg.get("candidates", [])
+    ]
+    status = (
+        f"Tramo {idx + 1}/{len(pending)} por confirmar — hueco entre "
+        f"{prev_end:.0f}s y {seg['start_time']:.0f}s. Haz clic en el jugador correcto."
+    )
+    return gallery, status
+
+
+def _review_nav(run_dir, chain, idx, delta):
+    idx = idx + delta
+    gallery, status = _render_review(run_dir, chain, idx)
+    pending = _pending_indices(chain)
+    idx = idx % len(pending) if pending else 0
+    return gallery, status, idx
+
+
+def _review_select(run_dir, chain, idx, evt: gr.SelectData):
+    pending = _pending_indices(chain)
+    if not pending:
+        return chain, [], "✅ No quedan tramos por confirmar.", idx
+    seg = chain[pending[idx % len(pending)]]
+    candidates = seg.get("candidates", [])
+    if evt.index >= len(candidates):
+        raise gr.Error("Candidato no válido.")
+    chosen = candidates[evt.index]
+    seg["track_id"] = chosen["track_id"]
+    seg["status"] = "confirmado"
+    seg.pop("candidates", None)
+    pending = _pending_indices(chain)
+    new_idx = 0
+    gallery, status = _render_review(run_dir, chain, new_idx)
+    return chain, gallery, status, new_idx
+
+
+def _save_review(run_dir, chain, progress=gr.Progress()):
+    if not run_dir:
+        raise gr.Error("No hay ningún análisis cargado todavía.")
+    path = Path(run_dir) / "player_track.json"
+    data = json.loads(path.read_text()) if path.exists() else {}
+    data["segments"] = chain
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False))
+    return "💾 Guardado."
 
 
 def _draw_calib_points(clean_frame, points):
@@ -170,6 +266,7 @@ def analizar(
     usar_ocr,
     generar_video,
     calib_points,
+    player_click,
     progress=gr.Progress(),
 ):
     video_path = _resolve_local_video(video, url, panorama, progress)
@@ -179,12 +276,18 @@ def analizar(
             f"La calibración tiene {len(calib_points)} puntos, necesita 4. "
             "Complétala o pulsa \"Reiniciar puntos\" para quitarla."
         )
+    if not player_click:
+        raise gr.Error(
+            "Marca primero al jugador que quieres seguir (extrae un frame y "
+            "haz clic sobre él)."
+        )
 
     run_dir = OUTPUT_ROOT / time.strftime("%Y%m%d_%H%M%S")
     config = PipelineConfig(
         video_path=video_path,
         output_dir=run_dir,
         calibration_points=calib_points or None,
+        target_click=tuple(player_click),
         start_s=float(inicio or 0),
         end_s=float(fin) if fin else None,
         stride=int(stride),
@@ -246,21 +349,43 @@ def analizar(
             [{"Minuto": "—", "Evento": "Sin eventos detectados", "Detalle": ""}]
         )
 
+    player_track = result.get("player_track") or {"target_track_id": None, "segments": []}
+    chain = player_track["segments"]
+    n_revisar = len(_pending_indices(chain))
+    if not chain:
+        resumen_jugador = (
+            "⚠️ No se pudo localizar al jugador en el frame elegido — "
+            "vuelve a marcarlo y repite el análisis."
+        )
+    elif n_revisar:
+        resumen_jugador = (
+            f"**{len(chain)} tramos** en la trayectoria del jugador — "
+            f"**{n_revisar} por confirmar** abajo."
+        )
+    else:
+        resumen_jugador = f"**{len(chain)} tramos**, todos enlazados automáticamente. Nada que revisar."
+    gallery, review_status_text = _render_review(str(run_dir), chain, 0)
+
     return (
         resumen_md,
         result["annotated_video"],
         players_df,
         events_df,
         result["highlights"],
+        resumen_jugador,
+        gallery,
+        review_status_text,
+        str(run_dir),
+        chain,
+        0,
     )
 
 
 with gr.Blocks(title="JPE AI Solutions — Análisis de Fútbol") as demo:
     gr.Markdown(
         "# ⚽ Análisis de Video de Fútbol\n"
-        "Sube un video del partido, ajusta las opciones si quieres, y pulsa "
-        "**Analizar**. Obtendrás el video con jugadores y balón marcados, "
-        "estadísticas, eventos y mapas de calor."
+        "Sube un video del partido, marca al jugador que quieres seguir, y "
+        "pulsa **Analizar**."
     )
 
     with gr.Row():
@@ -281,6 +406,24 @@ with gr.Blocks(title="JPE AI Solutions — Análisis de Fútbol") as demo:
                     "píxeles. Si no está disponible, se usa el plano normal."
                 ),
             )
+            gr.Markdown("### 🎯 Jugador a seguir")
+            gr.Markdown(
+                "Extrae un frame donde se vea bien a tu jugador y haz clic "
+                "sobre él. Es obligatorio: sin esto no hay a quién analizar."
+            )
+            with gr.Row():
+                player_t_in = gr.Number(
+                    value=0, label="Segundo del vídeo a extraer", scale=3
+                )
+                player_grab_btn = gr.Button("Extraer frame", scale=1)
+            player_image = gr.Image(
+                label="Haz clic sobre el jugador a seguir", interactive=False
+            )
+            player_status = gr.Markdown("Sin frame extraído todavía.")
+            player_reset_btn = gr.Button("Reiniciar selección")
+            player_frame_state = gr.State(None)
+            player_click_state = gr.State(None)
+
             with gr.Accordion("Opciones avanzadas", open=False):
                 stride_in = gr.Slider(
                     1, 10, value=2, step=1,
@@ -333,6 +476,21 @@ with gr.Blocks(title="JPE AI Solutions — Análisis de Fútbol") as demo:
                     players_out = gr.Dataframe(label="Estadísticas por jugador")
                 with gr.Tab("⚡ Eventos"):
                     events_out = gr.Dataframe(label="Eventos detectados")
+                with gr.Tab("🎯 Jugador seguido"):
+                    player_track_summary = gr.Markdown()
+                    review_gallery = gr.Gallery(
+                        label="Candidatos — haz clic en el jugador correcto",
+                        columns=4,
+                        height=220,
+                    )
+                    review_status = gr.Markdown()
+                    with gr.Row():
+                        review_prev_btn = gr.Button("◀ Anterior")
+                        review_next_btn = gr.Button("Siguiente ▶")
+                    review_save_btn = gr.Button("💾 Guardar cambios", variant="primary")
+                    run_dir_state = gr.State(None)
+                    player_chain_state = gr.State([])
+                    review_idx_state = gr.State(0)
                 with gr.Tab("🎬 Highlights"):
                     highlights_out = gr.Video(label="Resumen automático")
 
@@ -352,16 +510,54 @@ with gr.Blocks(title="JPE AI Solutions — Análisis de Fútbol") as demo:
         outputs=[calib_image, calib_points_state, calib_status],
     )
 
+    player_grab_btn.click(
+        _grab_frame_player,
+        inputs=[video_in, url_in, panorama_in, player_t_in],
+        outputs=[player_image, player_frame_state, player_click_state, player_status],
+    )
+    player_image.select(
+        _on_player_click,
+        inputs=[player_frame_state, player_t_in],
+        outputs=[player_image, player_click_state, player_status],
+    )
+    player_reset_btn.click(
+        _reset_player,
+        inputs=[player_frame_state],
+        outputs=[player_image, player_click_state, player_status],
+    )
+
     boton.click(
         analizar,
         inputs=[
             video_in, url_in, panorama_in, stride_in, inicio_in, fin_in,
-            ocr_in, anotado_in, calib_points_state,
+            ocr_in, anotado_in, calib_points_state, player_click_state,
         ],
         outputs=[
             resumen_out, video_out, players_out, events_out, highlights_out,
+            player_track_summary, review_gallery, review_status,
+            run_dir_state, player_chain_state, review_idx_state,
         ],
         api_name="analizar",
+    )
+    review_prev_btn.click(
+        lambda rd, c, i: _review_nav(rd, c, i, -1),
+        inputs=[run_dir_state, player_chain_state, review_idx_state],
+        outputs=[review_gallery, review_status, review_idx_state],
+    )
+    review_next_btn.click(
+        lambda rd, c, i: _review_nav(rd, c, i, 1),
+        inputs=[run_dir_state, player_chain_state, review_idx_state],
+        outputs=[review_gallery, review_status, review_idx_state],
+    )
+    review_gallery.select(
+        _review_select,
+        inputs=[run_dir_state, player_chain_state, review_idx_state],
+        outputs=[player_chain_state, review_gallery, review_status, review_idx_state],
+    )
+    review_save_btn.click(
+        _save_review,
+        inputs=[run_dir_state, player_chain_state],
+        outputs=[review_status],
     )
 
 

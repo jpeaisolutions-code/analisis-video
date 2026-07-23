@@ -10,6 +10,7 @@ from .detection import DEFAULT_BALL_MODEL, DEFAULT_PLAYER_MODEL, Detector
 from .events import EventDetector
 from .highlights import build_highlights
 from .pitch import PITCH_CORNERS, PitchCalibration, load_calibration
+from .player_track import PlayerTrackBuilder
 from .scoreboard import ScoreboardReader
 from .stats import MatchStats
 from .teams import TeamClassifier
@@ -26,6 +27,8 @@ class PipelineConfig:
     # Alternativa a calibration_path: las 4 esquinas de la cancha (píxeles),
     # en el orden de pitch.PITCH_CORNERS, recogidas por clic en la app.
     calibration_points: list[tuple[float, float]] | None = None
+    # Jugador a seguir: (segundo, x_px, y_px) del clic sobre el frame elegido.
+    target_click: tuple[float, float, float] | None = None
     player_model_path: str = DEFAULT_PLAYER_MODEL
     ball_model_path: str = DEFAULT_BALL_MODEL
     start_s: float = 0.0
@@ -99,6 +102,13 @@ def run_pipeline(
     event_detector = EventDetector(calibration=calibration, fps=effective_fps)
     scoreboard = ScoreboardReader() if config.use_scoreboard_ocr else None
 
+    player_builder = None
+    thumbs_dir = None
+    if config.target_click:
+        target_time_s, target_x, target_y = config.target_click
+        player_builder = PlayerTrackBuilder(target_time_s, (target_x, target_y))
+        thumbs_dir = output_dir / "player_thumbs"
+
     writer = None
     if config.write_annotated_video:
         writer = VideoWriter(
@@ -121,6 +131,8 @@ def run_pipeline(
             teams = team_classifier.update(frame, tracked.persons)
             stats.update(tracked, teams)
             event_detector.update(tracked.time_s, tracked.ball_xy)
+            if player_builder is not None:
+                player_builder.update(frame, tracked, teams, thumbs_dir)
             if scoreboard is not None:
                 scoreboard.update(tracked.time_s, frame)
             if writer is not None:
@@ -140,7 +152,7 @@ def run_pipeline(
         status("Convirtiendo el video anotado a H.264…")
         _reencode_h264(output_dir / "annotated.mp4")
 
-    status("Calculando estadísticas y mapas de calor…")
+    status("Calculando estadísticas…")
     all_events = event_detector.events + (
         scoreboard.events if scoreboard is not None else []
     )
@@ -152,6 +164,13 @@ def run_pipeline(
     stats_path.write_text(json.dumps(stats_data, indent=2, ensure_ascii=False))
     events_path = output_dir / "events.json"
     events_path.write_text(json.dumps(events_data, indent=2, ensure_ascii=False))
+
+    player_track_data = None
+    if player_builder is not None:
+        player_track_data = player_builder.build_chain()
+        (output_dir / "player_track.json").write_text(
+            json.dumps(player_track_data, indent=2, ensure_ascii=False)
+        )
 
     status("Generando highlights…")
     highlights_path = build_highlights(
@@ -169,4 +188,6 @@ def run_pipeline(
         "highlights": str(highlights_path) if highlights_path else None,
         "stats_data": stats_data,
         "events_data": events_data,
+        "player_track": player_track_data,
+        "player_thumbs_dir": str(thumbs_dir) if thumbs_dir else None,
     }
