@@ -24,7 +24,26 @@ from .tracking import TrackedFrame, bottom_center
 MAX_GAP_S = 8.0
 CONFIDENCE_MARGIN = 1.6  # el mejor candidato debe "ganar" al 2º por este factor para autoenlazar
 COLOR_WEIGHT = 1.5  # peso relativo de la diferencia de color de camiseta frente a la distancia espacial (px)
-THUMB_SIZE = (96, 160)  # ancho, alto
+THUMB_SIZE = (160, 200)  # ancho, alto
+# El plano táctico de Veo deja al jugador en muy pocos píxeles reales; recortar
+# justo su caja y ampliarla no recupera detalle que nunca existió. En vez de
+# eso se recorta con contexto alrededor (más viable reconocerse por posición
+# en el campo/jugadores cercanos que por rasgos a esta resolución) y se
+# resalta con un recuadro cuál de los jugadores del recorte es el candidato.
+THUMB_PAD_X = 1.2  # contexto horizontal, relativo al ancho del propio jugador
+THUMB_PAD_Y = 0.6  # contexto vertical, relativo a su propia altura
+
+# El pool usado para el enlace automático es estricto (mismo equipo, MAX_GAP_S)
+# a propósito. Pero cuando el tramo queda "revisar", ese mismo filtro puede
+# dejar fuera al jugador real (equipo mal clasificado, o el track real no
+# entra en el top-4 por score) sin que el usuario tenga forma de saberlo o
+# elegirlo. Para la galería del wizard se usa un pool más amplio (cualquier
+# equipo, ventana más larga) con el equipo incorrecto como penalización en
+# vez de exclusión, para que la opción correcta esté disponible aunque el
+# filtro automático la hubiera descartado.
+DISPLAY_CANDIDATES = 8
+DISPLAY_GAP_S = MAX_GAP_S * 2
+TEAM_MISMATCH_PENALTY = 200.0
 
 
 @dataclass
@@ -161,15 +180,30 @@ class PlayerTrackBuilder:
             status = "confirmado" if confident else "revisar"
             seg = _segment_dict(best, status)
             if not confident:
-                seg["candidates"] = [
-                    {"track_id": t.track_id, "score": round(self._link_score(current, t), 1)}
-                    for t in scored[:4]
-                ]
+                seg["candidates"] = self._display_candidates(current, used)
             segments.append(seg)
             used.add(best.track_id)
             current = best
 
         return {"target_track_id": self.target_track_id, "segments": segments}
+
+    def _display_candidates(self, current: _TrackAccum, used: set) -> list:
+        pool = [
+            t
+            for t in self._tracks.values()
+            if t.track_id not in used
+            and 0 < (t.start_time - current.end_time) <= DISPLAY_GAP_S
+        ]
+
+        def score(t: _TrackAccum) -> float:
+            penalty = 0.0 if t.team == current.team else TEAM_MISMATCH_PENALTY
+            return self._link_score(current, t) + penalty
+
+        scored = sorted(pool, key=score)
+        return [
+            {"track_id": t.track_id, "score": round(score(t), 1)}
+            for t in scored[:DISPLAY_CANDIDATES]
+        ]
 
 
 def _segment_dict(acc: _TrackAccum, status: str) -> dict:
@@ -183,10 +217,18 @@ def _segment_dict(acc: _TrackAccum, status: str) -> dict:
 
 def _save_thumb(frame: np.ndarray, xyxy: np.ndarray, path: Path) -> None:
     x1, y1, x2, y2 = xyxy.astype(int)
-    x1, y1 = max(x1, 0), max(y1, 0)
-    crop = frame[y1:y2, x1:x2]
+    w, h = x2 - x1, y2 - y1
+    if w <= 0 or h <= 0:
+        return
+    fh, fw = frame.shape[:2]
+    pad_x, pad_y = int(w * THUMB_PAD_X), int(h * THUMB_PAD_Y)
+    cx1, cy1 = max(x1 - pad_x, 0), max(y1 - pad_y, 0)
+    cx2, cy2 = min(x2 + pad_x, fw), min(y2 + pad_y, fh)
+    crop = frame[cy1:cy2, cx1:cx2]
     if crop.size == 0:
         return
-    crop = cv2.resize(crop, THUMB_SIZE)
+    crop = crop.copy()
+    cv2.rectangle(crop, (x1 - cx1, y1 - cy1), (x2 - cx1, y2 - cy1), (0, 215, 255), 2)
+    crop = cv2.resize(crop, THUMB_SIZE, interpolation=cv2.INTER_CUBIC)
     path.parent.mkdir(parents=True, exist_ok=True)
     cv2.imwrite(str(path), crop)
