@@ -18,7 +18,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from .teams import _shirt_color
+from .teams import UNKNOWN, _shirt_color
 from .tracking import TrackedFrame, bottom_center
 
 MAX_GAP_S = 8.0
@@ -100,6 +100,12 @@ class PlayerTrackBuilder:
                 self._tracks[tid] = acc
                 if thumbs_dir is not None:
                     _save_thumb(frame, persons.xyxy[i], thumbs_dir / f"{tid}.jpg")
+            elif acc.team == UNKNOWN and int(teams[i]) != UNKNOWN:
+                # El clasificador de equipo tarda ~300 muestras en calibrar; si
+                # este track nació antes de eso quedó con equipo UNKNOWN. Lo
+                # corregimos en cuanto el clasificador ya sepa clasificarlo,
+                # si no, nunca podría enlazarse con ningún candidato futuro.
+                acc.team = int(teams[i])
             acc.end_frame = tracked.frame_index
             acc.end_time = tracked.time_s
             acc.end_pos = pos
@@ -114,7 +120,12 @@ class PlayerTrackBuilder:
         if self.target_track_id is None and tracked.time_s >= self.target_time_s:
             dists = np.linalg.norm(centers - self.target_xy, axis=1)
             nearest = int(np.argmin(dists))
-            if dists[nearest] < 150:  # px — evita engancharse a algo lejano si el clic falló
+            # Umbral relativo al tamaño real de los jugadores en el frame (no
+            # un nº de píxeles fijo) para que funcione igual en 480p que en
+            # 4K o con la cámara más o menos alejada.
+            widths = persons.xyxy[:, 2] - persons.xyxy[:, 0]
+            max_click_dist = 2.5 * float(np.median(widths))
+            if dists[nearest] < max_click_dist:
                 self.target_track_id = int(persons.tracker_id[nearest])
 
     def _link_score(self, a: _TrackAccum, b: _TrackAccum) -> float:
