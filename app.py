@@ -8,6 +8,7 @@ Uso:
 import argparse
 import json
 import re
+import subprocess
 import sys
 import time
 import urllib.parse
@@ -86,6 +87,48 @@ def _download_video(url: str, name: str, progress) -> Path:
                     )
     return dest
 
+
+def _fetch_video_clip(url: str, name: str, start_s: float, end_s: float | None, progress) -> Path:
+    """Recorta el tramo pedido directamente desde la URL con ffmpeg, en vez de
+    descargar el partido entero para luego recortar frames al analizar.
+
+    `-ss` antes de `-i` hace input-seeking: aprovecha range requests del CDN
+    (si los soporta) para no traer más que el tramo pedido, a cambio de que
+    el inicio real quede en el keyframe más cercano anterior (no exacto al
+    segundo, pero de sobra para pruebas)."""
+    DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    end_label = f"{int(end_s)}" if end_s else "fin"
+    suffix = Path(name).suffix or ".mp4"
+    dest = DOWNLOAD_DIR / f"{Path(name).stem}_{int(start_s)}-{end_label}{suffix}"
+    if dest.exists():
+        return dest  # ya se descargó este mismo tramo
+    progress(0, desc=f"Descargando tramo {start_s:.0f}s–{end_label}s…")
+    cmd = ["ffmpeg", "-y", "-loglevel", "error"]
+    if start_s:
+        cmd += ["-ss", str(start_s)]
+    cmd += ["-i", url]
+    if end_s:
+        cmd += ["-t", str(max(end_s - start_s, 0.1))]
+    cmd += ["-c", "copy", str(dest)]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    # ffmpeg puede devolver código 0 aunque el archivo quede truncado/corrupto
+    # (p.ej. si el servidor no maneja bien las peticiones de rango que pide
+    # `-ss` antes de `-i`) — se valida abriendo el resultado de verdad.
+    valid = result.returncode == 0 and dest.exists()
+    if valid:
+        cap = cv2.VideoCapture(str(dest))
+        valid = cap.isOpened() and cap.read()[0]
+        cap.release()
+    if not valid:
+        dest.unlink(missing_ok=True)
+        raise gr.Error(
+            "No se pudo descargar el tramo pedido (el archivo quedó "
+            "incompleto o corrupto — puede que el servidor no soporte bien "
+            "peticiones de rango). Prueba a dejar 'Segundo inicial'/'Segundo "
+            f"final' vacíos para descargar el partido entero. Detalle: {result.stderr[-300:]}"
+        )
+    return dest
+
 KIND_LABELS = {"goal": "⚽ Gol", "shot": "🎯 Remate", "corner": "🚩 Córner"}
 CORNER_LABELS = (
     "superior-izquierda",
@@ -95,18 +138,22 @@ CORNER_LABELS = (
 )
 
 
-def _resolve_local_video(video, url, panorama, progress) -> Path:
+def _resolve_local_video(video, url, panorama, inicio, fin, progress) -> Path:
     if url and url.strip():
         progress(0, desc="Localizando el video…")
         direct_url, name = _resolve_video_url(url.strip(), prefer_panorama=panorama)
+        start_s = float(inicio or 0)
+        end_s = float(fin) if fin else None
+        if start_s or end_s:
+            return _fetch_video_clip(direct_url, name, start_s, end_s, progress)
         return _download_video(direct_url, name, progress)
     if not video:
         raise gr.Error("Sube un video o pega un enlace primero.")
     return Path(video)
 
 
-def _extract_frame(video, url, panorama, at_s, progress) -> "np.ndarray":
-    path = _resolve_local_video(video, url, panorama, progress)
+def _extract_frame(video, url, panorama, inicio, fin, at_s, progress) -> "np.ndarray":
+    path = _resolve_local_video(video, url, panorama, inicio, fin, progress)
     cap = cv2.VideoCapture(str(path))
     if not cap.isOpened():
         raise gr.Error(f"No se pudo abrir el vídeo: {path}")
@@ -119,16 +166,16 @@ def _extract_frame(video, url, panorama, at_s, progress) -> "np.ndarray":
     return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
 
-def _grab_frame(video, url, panorama, at_s, progress=gr.Progress()):
+def _grab_frame(video, url, panorama, inicio, fin, at_s, progress=gr.Progress()):
     """Extrae un frame del vídeo (en `at_s` segundos) para calibrar sobre él."""
-    rgb = _extract_frame(video, url, panorama, at_s, progress)
+    rgb = _extract_frame(video, url, panorama, inicio, fin, at_s, progress)
     status = f"0/4 puntos — haz clic en la esquina {CORNER_LABELS[0]}"
     return rgb, rgb, [], status
 
 
-def _grab_frame_player(video, url, panorama, at_s, progress=gr.Progress()):
+def _grab_frame_player(video, url, panorama, inicio, fin, at_s, progress=gr.Progress()):
     """Extrae un frame del vídeo para elegir con un clic al jugador a seguir."""
-    rgb = _extract_frame(video, url, panorama, at_s, progress)
+    rgb = _extract_frame(video, url, panorama, inicio, fin, at_s, progress)
     status = "Haz clic sobre el jugador que quieres seguir."
     return rgb, rgb, None, status
 
@@ -309,7 +356,7 @@ def analizar(
     player_click,
     progress=gr.Progress(),
 ):
-    video_path = _resolve_local_video(video, url, panorama, progress)
+    video_path = _resolve_local_video(video, url, panorama, inicio, fin, progress)
 
     if calib_points and len(calib_points) != 4:
         raise gr.Error(
@@ -322,14 +369,22 @@ def analizar(
             "haz clic sobre él)."
         )
 
+    # Si venimos de un enlace de Veo con inicio/fin marcados, _resolve_local_video
+    # ya descargó justo ese tramo (ver _fetch_video_clip) — el archivo local ya
+    # empieza en 0, así que NO hay que volver a recortarlo aquí o se
+    # interpretaría "inicio" como segundos dentro del propio tramo ya recortado.
+    fetched_bounded_clip = bool(url and url.strip()) and bool(float(inicio or 0) or fin)
+    start_s = 0.0 if fetched_bounded_clip else float(inicio or 0)
+    end_s = None if fetched_bounded_clip else (float(fin) if fin else None)
+
     run_dir = OUTPUT_ROOT / time.strftime("%Y%m%d_%H%M%S")
     config = PipelineConfig(
         video_path=video_path,
         output_dir=run_dir,
         calibration_points=calib_points or None,
         target_click=tuple(player_click),
-        start_s=float(inicio or 0),
-        end_s=float(fin) if fin else None,
+        start_s=start_s,
+        end_s=end_s,
         stride=int(stride),
         use_scoreboard_ocr=usar_ocr,
         write_annotated_video=generar_video,
@@ -474,9 +529,20 @@ with gr.Blocks(title="JPE AI Solutions — Análisis de Fútbol") as demo:
                     1, 10, value=2, step=1,
                     label="Procesar 1 de cada N frames (más alto = más rápido)",
                 )
-                inicio_in = gr.Number(value=0, label="Segundo inicial")
+                inicio_in = gr.Number(
+                    value=0,
+                    label="Segundo inicial (tiempo real del partido)",
+                    info=(
+                        "Con un enlace de Veo: si pones inicio y/o fin, se "
+                        "descarga solo ese tramo (mucho más rápido que el "
+                        "partido entero). Ojo: una vez descargado, el 'segundo "
+                        "a extraer' de arriba pasa a contarse desde 0 dentro "
+                        "de ese tramo, no desde el partido completo."
+                    ),
+                )
                 fin_in = gr.Number(
-                    value=None, label="Segundo final (vacío = hasta el final)"
+                    value=None,
+                    label="Segundo final (vacío = hasta el final, o hasta el final del partido si no hay tramo)",
                 )
                 ocr_in = gr.Checkbox(
                     value=False,
@@ -544,7 +610,7 @@ with gr.Blocks(title="JPE AI Solutions — Análisis de Fútbol") as demo:
 
     calib_grab_btn.click(
         _grab_frame,
-        inputs=[video_in, url_in, panorama_in, calib_t_in],
+        inputs=[video_in, url_in, panorama_in, inicio_in, fin_in, calib_t_in],
         outputs=[calib_image, calib_frame_state, calib_points_state, calib_status],
     )
     calib_image.select(
@@ -560,7 +626,7 @@ with gr.Blocks(title="JPE AI Solutions — Análisis de Fútbol") as demo:
 
     player_grab_btn.click(
         _grab_frame_player,
-        inputs=[video_in, url_in, panorama_in, player_t_in],
+        inputs=[video_in, url_in, panorama_in, inicio_in, fin_in, player_t_in],
         outputs=[player_image, player_frame_state, player_click_state, player_status],
     )
     player_image.select(
