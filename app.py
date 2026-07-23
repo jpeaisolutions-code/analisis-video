@@ -215,83 +215,82 @@ def _visible_candidates(seg: dict, rejected: set) -> list:
 def _render_review(run_dir, chain, idx, rejected):
     pending = _pending_indices(chain)
     if not chain:
-        return [], "No se pudo localizar al jugador en el frame elegido — revisa el clic e inténtalo de nuevo."
+        return (
+            [],
+            "No se pudo localizar al jugador en el frame elegido — revisa el clic e inténtalo de nuevo.",
+            [],
+        )
     if not pending:
-        return [], "✅ No quedan tramos por confirmar."
+        return [], "✅ No quedan tramos por confirmar.", []
     idx = idx % len(pending)
     seg_idx = pending[idx]
     seg = chain[seg_idx]
     prev_end = chain[seg_idx - 1]["end_time"]
     visible = _visible_candidates(seg, rejected)
     gallery = [(_thumb(run_dir, c["track_id"]), f"#{c['track_id']}") for c in visible]
+    choices = [f"#{c['track_id']}" for c in visible]
     hueco = f"hueco entre {prev_end:.0f}s y {seg['start_time']:.0f}s"
     if visible:
         status = (
-            f"Tramo {idx + 1}/{len(pending)} por confirmar — {hueco}. Haz clic en "
-            "el jugador, luego confirma con ✅ o descártalo con ❌."
+            f"Tramo {idx + 1}/{len(pending)} por confirmar — {hueco}. Haz clic "
+            "en el jugador correcto para confirmarlo. Si alguno de los que "
+            "salen NO es él, marca su casilla abajo y pulsa Descartar."
         )
     else:
         status = (
             f"Tramo {idx + 1}/{len(pending)} por confirmar — {hueco}. Sin "
-            "candidatos visibles (los rechazaste todos) — usa Siguiente, o "
+            "candidatos visibles (los descartaste todos) — usa Siguiente, o "
             "vuelve a marcar al jugador más adelante y repite el análisis."
         )
-    return gallery, status
+    return gallery, status, choices
+
+
+def _choices_update(choices: list):
+    """CheckboxGroup necesita gr.update(choices=...) para cambiar las opciones
+    disponibles — devolver la lista a secas solo cambiaría el valor marcado."""
+    return gr.update(choices=choices, value=[])
 
 
 def _review_nav(run_dir, chain, idx, delta, rejected):
     idx = idx + delta
-    gallery, status = _render_review(run_dir, chain, idx, rejected)
+    gallery, status, choices = _render_review(run_dir, chain, idx, rejected)
     pending = _pending_indices(chain)
     idx = idx % len(pending) if pending else 0
-    return gallery, status, idx, None
+    return gallery, status, _choices_update(choices), idx
 
 
-def _review_mark_selected(run_dir, chain, idx, rejected, evt: gr.SelectData):
+def _review_select(run_dir, chain, idx, rejected, evt: gr.SelectData):
     pending = _pending_indices(chain)
     if not pending:
-        return None, "✅ No quedan tramos por confirmar."
+        return chain, [], "✅ No quedan tramos por confirmar.", _choices_update([]), idx
     seg = chain[pending[idx % len(pending)]]
     visible = _visible_candidates(seg, rejected)
     if evt.index >= len(visible):
-        raise gr.Error("Candidato no válido.")
-    tid = visible[evt.index]["track_id"]
-    return evt.index, f"Candidato #{tid} seleccionado — pulsa ✅ si es tu jugador, ❌ si no lo es."
-
-
-def _review_accept(run_dir, chain, idx, rejected, selected):
-    pending = _pending_indices(chain)
-    if not pending:
-        return chain, [], "✅ No quedan tramos por confirmar.", idx, None
-    if selected is None:
-        raise gr.Error("Selecciona primero un candidato haciendo clic en su miniatura.")
-    seg = chain[pending[idx % len(pending)]]
-    visible = _visible_candidates(seg, rejected)
-    if selected >= len(visible):
-        raise gr.Error("Ese candidato ya no está disponible, vuelve a seleccionar.")
-    chosen = visible[selected]
+        raise gr.Error("Ese candidato ya no está disponible, vuelve a intentarlo.")
+    chosen = visible[evt.index]
     seg["track_id"] = chosen["track_id"]
     seg["status"] = "confirmado"
     seg.pop("candidates", None)
     new_idx = 0
-    gallery, status = _render_review(run_dir, chain, new_idx, rejected)
-    return chain, gallery, status, new_idx, None
+    gallery, status, choices = _render_review(run_dir, chain, new_idx, rejected)
+    return chain, gallery, status, _choices_update(choices), new_idx
 
 
-def _review_reject(run_dir, chain, idx, rejected, selected):
+def _review_discard(run_dir, chain, idx, rejected, chosen_labels):
     pending = _pending_indices(chain)
     if not pending:
-        return rejected, [], "✅ No quedan tramos por confirmar.", None
-    if selected is None:
-        raise gr.Error("Selecciona primero un candidato haciendo clic en su miniatura.")
+        return rejected, [], "✅ No quedan tramos por confirmar.", _choices_update([])
+    if not chosen_labels:
+        raise gr.Error("Marca al menos un candidato de la lista para descartarlo.")
     seg = chain[pending[idx % len(pending)]]
     visible = _visible_candidates(seg, rejected)
-    if selected >= len(visible):
-        raise gr.Error("Ese candidato ya no está disponible, vuelve a seleccionar.")
+    label_to_id = {f"#{c['track_id']}": c["track_id"] for c in visible}
     rejected = set(rejected)
-    rejected.add(visible[selected]["track_id"])
-    gallery, status = _render_review(run_dir, chain, idx, rejected)
-    return rejected, gallery, status, None
+    for label in chosen_labels:
+        if label in label_to_id:
+            rejected.add(label_to_id[label])
+    gallery, status, choices = _render_review(run_dir, chain, idx, rejected)
+    return rejected, gallery, status, _choices_update(choices)
 
 
 def _save_review(run_dir, chain, rejected, progress=gr.Progress()):
@@ -465,7 +464,7 @@ def analizar(
         )
     else:
         resumen_jugador = f"**{len(chain)} tramos**, todos enlazados automáticamente y hasta el final del análisis. Nada que revisar."
-    gallery, review_status_text = _render_review(str(run_dir), chain, 0, set())
+    gallery, review_status_text, review_choices = _render_review(str(run_dir), chain, 0, set())
 
     return (
         resumen_md,
@@ -475,6 +474,7 @@ def analizar(
         resumen_jugador,
         gallery,
         review_status_text,
+        _choices_update(review_choices),
         str(run_dir),
         chain,
         0,
@@ -588,14 +588,16 @@ with gr.Blocks(title="JPE AI Solutions — Análisis de Fútbol") as demo:
                 with gr.Tab("🎯 Jugador seguido"):
                     player_track_summary = gr.Markdown()
                     review_gallery = gr.Gallery(
-                        label="Candidatos — haz clic en el jugador, luego confirma o descarta",
+                        label="Candidatos — haz clic en el jugador correcto para confirmarlo",
                         columns=4,
                         height=220,
                     )
                     review_status = gr.Markdown()
-                    with gr.Row():
-                        review_accept_btn = gr.Button("✅ Es él/ella")
-                        review_reject_btn = gr.Button("❌ No es él/ella")
+                    review_discard_choices = gr.CheckboxGroup(
+                        label="Ninguno de estos es tu jugador — márcalos y descarta",
+                        choices=[],
+                    )
+                    review_discard_btn = gr.Button("❌ Descartar marcados")
                     with gr.Row():
                         review_prev_btn = gr.Button("◀ Anterior")
                         review_next_btn = gr.Button("Siguiente ▶")
@@ -603,7 +605,6 @@ with gr.Blocks(title="JPE AI Solutions — Análisis de Fútbol") as demo:
                     run_dir_state = gr.State(None)
                     player_chain_state = gr.State([])
                     review_idx_state = gr.State(0)
-                    review_selected_state = gr.State(None)
                     rejected_ids_state = gr.State(set())
                 with gr.Tab("🎬 Highlights"):
                     highlights_out = gr.Video(label="Resumen automático")
@@ -649,46 +650,38 @@ with gr.Blocks(title="JPE AI Solutions — Análisis de Fútbol") as demo:
         outputs=[
             resumen_out, video_out, events_out, highlights_out,
             player_track_summary, review_gallery, review_status,
-            run_dir_state, player_chain_state, review_idx_state,
+            review_discard_choices, run_dir_state, player_chain_state, review_idx_state,
         ],
         api_name="analizar",
     ).then(
-        lambda: (set(), None),
-        outputs=[rejected_ids_state, review_selected_state],
+        lambda: set(),
+        outputs=[rejected_ids_state],
     )
     review_prev_btn.click(
         lambda rd, c, i, rej: _review_nav(rd, c, i, -1, rej),
         inputs=[run_dir_state, player_chain_state, review_idx_state, rejected_ids_state],
-        outputs=[review_gallery, review_status, review_idx_state, review_selected_state],
+        outputs=[review_gallery, review_status, review_discard_choices, review_idx_state],
     )
     review_next_btn.click(
         lambda rd, c, i, rej: _review_nav(rd, c, i, 1, rej),
         inputs=[run_dir_state, player_chain_state, review_idx_state, rejected_ids_state],
-        outputs=[review_gallery, review_status, review_idx_state, review_selected_state],
+        outputs=[review_gallery, review_status, review_discard_choices, review_idx_state],
     )
     review_gallery.select(
-        _review_mark_selected,
+        _review_select,
         inputs=[run_dir_state, player_chain_state, review_idx_state, rejected_ids_state],
-        outputs=[review_selected_state, review_status],
-    )
-    review_accept_btn.click(
-        _review_accept,
-        inputs=[
-            run_dir_state, player_chain_state, review_idx_state,
-            rejected_ids_state, review_selected_state,
-        ],
         outputs=[
             player_chain_state, review_gallery, review_status,
-            review_idx_state, review_selected_state,
+            review_discard_choices, review_idx_state,
         ],
     )
-    review_reject_btn.click(
-        _review_reject,
+    review_discard_btn.click(
+        _review_discard,
         inputs=[
             run_dir_state, player_chain_state, review_idx_state,
-            rejected_ids_state, review_selected_state,
+            rejected_ids_state, review_discard_choices,
         ],
-        outputs=[rejected_ids_state, review_gallery, review_status, review_selected_state],
+        outputs=[rejected_ids_state, review_gallery, review_status, review_discard_choices],
     )
     review_save_btn.click(
         _save_review,
